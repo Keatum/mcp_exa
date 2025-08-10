@@ -431,6 +431,342 @@ async def exa_fetch_subpages(
     logger.debug(f"Subpages results: {subpages_results}")
     return {"page": page, "subpages": subpages_results}
 
+# New helper to build the MCP server without starting the ASGI app.
+# This allows tests to import and exercise the tool definitions and dispatcher
+# without invoking uvicorn.  The returned ``Server`` instance has the same
+# ``list_tools`` and ``call_tool`` methods as defined in :func:`main`.
+def build_mcp_server(json_response: bool = False) -> Server:
+    """
+    Construct and return an MCP Server instance with all Exa tools registered.
+
+    This function encapsulates the tool definitions and dispatch logic so they
+    can be reused outside of the CLI entrypoint.  It mirrors the behaviour of
+    the server created in ``main`` without setting up any transports or
+    starting the ASGI application.  Tests can call this function to obtain
+    a fresh server and verify the behaviour of ``list_tools`` and ``call_tool``.
+
+    Args:
+        json_response: Unused placeholder to match the signature of the CLI.
+
+    Returns:
+        A fully configured ``Server`` instance with tools registered.
+    """
+    app = Server("exa-mcp-server")
+
+    @app.list_tools()
+    async def list_tools() -> list[types.Tool]:
+        return [
+            # Search tool
+            types.Tool(
+                name="exa_web_search",
+                description=(
+                    "Perform a real-time web search via Exa and return a list of "
+                    "results with title, url, and snippet fields. Optionally "
+                    "include full text in each result."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query.",
+                        },
+                        "num_results": {
+                            "type": "integer",
+                            "description": "Maximum number of results to return",
+                            "minimum": 1,
+                            "default": 3,
+                        },
+                        "include_text": {
+                            "type": "boolean",
+                            "description": "Whether to include full page text in each search result",
+                            "default": False,
+                        },
+                    },
+                    "required": ["query"],
+                },
+            ),
+            # Content retrieval tool
+            types.Tool(
+                name="exa_fetch_content",
+                description=(
+                    "Retrieve and read the full text content of a given URL using "
+                    "Exa's content retrieval API. Use after obtaining a URL from "
+                    "exa_web_search or other means."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "The URL of the page to fetch.",
+                        },
+                    },
+                    "required": ["url"],
+                },
+            ),
+            # Bulk content retrieval tool
+            types.Tool(
+                name="exa_fetch_contents",
+                description=(
+                    "Retrieve the full text contents of multiple URLs in one call via Exa's "
+                    "contents API. Provide a list of URLs and optionally specify the "
+                    "livecrawl mode to control whether Exa should fetch fresh pages."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "urls": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "A list of URLs to fetch. Must contain at least one URL.",
+                        },
+                        "livecrawl": {
+                            "type": "string",
+                            "description": "Optional livecrawl mode: 'always', 'preferred', or 'never'.",
+                            "enum": ["always", "preferred", "never"],
+                        },
+                    },
+                    "required": ["urls"],
+                },
+            ),
+            # Subpage crawling tool
+            types.Tool(
+                name="exa_fetch_subpages",
+                description=(
+                    "Crawl a website and retrieve the contents of the root page and a number of "
+                    "its subpages. Use this when you need to explore beyond the main page, "
+                    "such as fetching 'about' or 'products' pages on a company site."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "The root URL from which to crawl subpages.",
+                        },
+                        "subpages": {
+                            "type": "integer",
+                            "description": "Maximum number of subpages to crawl.",
+                            "minimum": 1,
+                            "default": 5,
+                        },
+                        "subpage_target": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional keywords used to prioritise which subpages to fetch.",
+                        },
+                        "livecrawl": {
+                            "type": "string",
+                            "description": "Optional livecrawl mode: 'always', 'preferred', or 'never'.",
+                            "enum": ["always", "preferred", "never"],
+                        },
+                    },
+                    "required": ["url"],
+                },
+            ),
+            # Find similar links tool
+            types.Tool(
+                name="exa_find_similar_links",
+                description=(
+                    "Given a URL, return a list of links with similar meaning "
+                    "using Exa's findSimilar API. Useful for discovering related "
+                    "articles or pages."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "The URL to find similar links for.",
+                        },
+                        "include_text": {
+                            "type": "boolean",
+                            "description": "Whether to include the text of each similar page in the response.",
+                            "default": False,
+                        },
+                        "num_results": {
+                            "type": "integer",
+                            "description": "Maximum number of similar results to return",
+                            "minimum": 1,
+                            "default": 3,
+                        },
+                    },
+                    "required": ["url"],
+                },
+            ),
+            # Answer question tool
+            types.Tool(
+                name="exa_answer_question",
+                description=(
+                    "Ask a natural-language question and get a direct answer using "
+                    "Exa's Answer API. Returns both the answer and supporting "
+                    "citations."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The question to answer.",
+                        },
+                        "include_text": {
+                            "type": "boolean",
+                            "description": "Whether to include full text of supporting sources in the response.",
+                            "default": False,
+                        },
+                    },
+                    "required": ["query"],
+                },
+            ),
+            # Research start tool
+            types.Tool(
+                name="exa_research_start",
+                description=(
+                    "Start an asynchronous research task that uses Exa's "
+                    "agentic pipeline to search, reason, and synthesize an answer. "
+                    "Returns a task ID which you can poll to retrieve results."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "instructions": {
+                            "type": "string",
+                            "description": "Natural-language instructions describing the research task.",
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": "Optional model to use for research (e.g. 'exa-research' or 'exa-research-pro').",
+                        },
+                        "output_schema": {
+                            "type": "object",
+                            "description": "Optional JSON Schema specifying the desired structured output.",
+                        },
+                    },
+                    "required": ["instructions"],
+                },
+            ),
+            # Research poll tool
+            types.Tool(
+                name="exa_research_poll",
+                description=(
+                    "Poll a previously created research task to check its status and "
+                    "retrieve results once complete."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "task_id": {
+                            "type": "string",
+                            "description": "The ID of the research task returned by exa_research_start.",
+                        }
+                    },
+                    "required": ["task_id"],
+                },
+            ),
+        ]
+
+    @app.call_tool()
+    async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
+        """
+        Dispatch calls to the appropriate Exa helper function based on tool name.
+
+        This function mirrors the behaviour defined in ``main`` but without
+        duplicating branches.  It validates inputs, invokes the corresponding
+        asynchronous helper and returns a list of ``TextContent`` results.  If
+        ``include_text`` is requested for web search, it enriches the search
+        results by calling the contents API in bulk and falling back to
+        per-page requests on failure.
+        """
+        try:
+            if name == "exa_web_search":
+                query: str | None = arguments.get("query")
+                if not query:
+                    raise ValueError("Argument 'query' is required")
+                num_results: int = arguments.get("num_results", 3)
+                include_text: bool = arguments.get("include_text", False)
+                results = await exa_web_search(query=query, num_results=num_results)
+                if include_text:
+                    urls = [item.get("url") for item in results if item.get("url")]
+                    try:
+                        contents = await exa_fetch_contents(urls=urls)
+                        url_to_content = {item.get("url"): item for item in contents}
+                        enriched_results: list[dict[str, Any]] = []
+                        for item in results:
+                            page_url = item.get("url")
+                            enriched_results.append(url_to_content.get(page_url, item))
+                        results = enriched_results
+                    except Exception:
+                        enriched_results = []
+                        for item in results:
+                            try:
+                                content = await exa_fetch_content(url=item.get("url"))
+                                enriched_results.append(content)
+                            except Exception:
+                                enriched_results.append(item)
+                        results = enriched_results
+                return [types.TextContent(type="text", text=json.dumps(results, indent=2))]
+            elif name == "exa_fetch_content":
+                url: str | None = arguments.get("url")
+                if not url:
+                    raise ValueError("Argument 'url' is required")
+                result = await exa_fetch_content(url=url)
+                return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+            elif name == "exa_find_similar_links":
+                url: str | None = arguments.get("url")
+                if not url:
+                    raise ValueError("Argument 'url' is required")
+                include_text: bool = arguments.get("include_text", False)
+                num_results: int = arguments.get("num_results", 3)
+                results = await exa_find_similar_links(url=url, include_text=include_text, num_results=num_results)
+                return [types.TextContent(type="text", text=json.dumps(results, indent=2))]
+            elif name == "exa_fetch_contents":
+                urls: list | None = arguments.get("urls")
+                if not urls or not isinstance(urls, list):
+                    raise ValueError("Argument 'urls' must be a non-empty list")
+                livecrawl: str | None = arguments.get("livecrawl")
+                results = await exa_fetch_contents(urls=urls, livecrawl=livecrawl)
+                return [types.TextContent(type="text", text=json.dumps(results, indent=2))]
+            elif name == "exa_fetch_subpages":
+                url: str | None = arguments.get("url")
+                if not url:
+                    raise ValueError("Argument 'url' is required")
+                subpages: int = arguments.get("subpages", 5)
+                subpage_target = arguments.get("subpage_target")
+                if subpage_target and not isinstance(subpage_target, list):
+                    raise ValueError("Argument 'subpage_target' must be an array of strings if provided")
+                livecrawl: str | None = arguments.get("livecrawl")
+                result = await exa_fetch_subpages(url=url, subpages=subpages, subpage_target=subpage_target, livecrawl=livecrawl)
+                return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+            elif name == "exa_answer_question":
+                query: str | None = arguments.get("query")
+                if not query:
+                    raise ValueError("Argument 'query' is required")
+                include_text: bool = arguments.get("include_text", False)
+                result = await exa_answer_question(query=query, include_text=include_text)
+                return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+            elif name == "exa_research_start":
+                instructions: str | None = arguments.get("instructions")
+                if not instructions:
+                    raise ValueError("Argument 'instructions' is required")
+                model: str | None = arguments.get("model")
+                output_schema: dict | None = arguments.get("output_schema")
+                result = await exa_research_start(instructions=instructions, model=model, output_schema=output_schema)
+                return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+            elif name == "exa_research_poll":
+                task_id: str | None = arguments.get("task_id")
+                if not task_id:
+                    raise ValueError("Argument 'task_id' is required")
+                result = await exa_research_poll(task_id=task_id)
+                return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+            else:
+                return [types.TextContent(type="text", text=f"Error: Unknown tool '{name}'")]
+        except Exception as e:
+            logger.exception(f"Error executing tool {name}: {e}")
+            return [types.TextContent(type="text", text=f"Error: {str(e)}")]
+
+    return app
+
 
 @click.command()
 @click.option(
@@ -461,11 +797,15 @@ def main(port: int, log_level: str, json_response: bool) -> int:
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
-    # Create the MCP server instance
-    app = Server("exa-mcp-server")
+    # Create a throwaway legacy server instance for backward-compatibility.
+    # Tools and dispatcher will be registered on this instance but it will not be used
+    # for transport registration.  A new server is built via build_mcp_server below.
+    legacy_app = Server("exa-mcp-server")
+    # Build the actual MCP server with all tools/dispatcher registered
+    app = build_mcp_server(json_response=json_response)
 
     # Define the list of tools the server provides
-    @app.list_tools()
+    @legacy_app.list_tools()
     async def list_tools() -> list[types.Tool]:
         return [
             # Search tool
@@ -679,7 +1019,7 @@ def main(port: int, log_level: str, json_response: bool) -> int:
         ]
 
     # Define how to call each tool
-    @app.call_tool()
+    @legacy_app.call_tool()
     async def call_tool(
         name: str, arguments: dict
     ) -> list[types.TextContent]:
