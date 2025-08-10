@@ -1,0 +1,8 @@
+click
+python-dotenv
+mcp>=1.12.0
+pydantic
+typing-extensions
+starlette
+uvicorn[standard]
+httpx
